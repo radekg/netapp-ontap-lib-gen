@@ -1,0 +1,178 @@
+#!/usr/bin/env python
+
+import re, optparse, tempfile, shutil, zipfile, os
+from lib.python import GenerateNetAppPython
+
+types = {}
+methods = {}
+categories = {}
+class_to_category = {}
+
+optparse = optparse.OptionParser()
+optparse.add_option("-l", "--language",
+                    dest="language", help="Language to generate the library for.", metavar="LANGUAGE",
+                    default="python")
+optparse.add_option("-z", "--zedi-jar",
+                    dest="zedi_jar", help="zexplore.jar location.", metavar="ZEXPLORE_JAR_FILE",
+                    default="~/zedi/zexplore.jar")
+optparse.add_option("-a", "--api",
+                    dest="api", help="API to generate the code for.", metavar="API_NAME",
+                    default="ontapi_cluster")
+optparse.add_option("-v", "--version",
+                    dest="api_version", help="API version.", metavar="API_VERSION",
+                    default="1.21")
+optparse.add_option("-d", "--describe",
+                    dest="describe", help="Only describe ZEDI.", action="store_true")
+options, args = optparse.parse_args()
+
+tempdir = tempfile.mkdtemp()
+print tempdir
+shutil.copyfile(options.zedi_jar, "{}/zexplore.jar".format( tempdir ))
+with zipfile.ZipFile("{}/zexplore.jar".format( tempdir ), 'r') as zfile:
+   zfile.extractall( "{}".format( tempdir ) )
+
+if options.describe:
+    for (dirpath, dirnames, filenames) in os.walk("{}/doc".format(tempdir)):
+        for filename in filenames:
+            print " -> {}".format( filename )
+    shutil.rmtree(tempdir)
+
+else:
+
+    with open("{}/doc/{}_{}".format( tempdir, options.api, options.api_version )) as f:
+        
+        lines = f.readlines()
+
+        shutil.rmtree(tempdir)
+
+        last_category = None
+        last_typedef = None
+        last_api = None
+
+        last_api_typedef_category = None
+
+        last_element = None
+        last_input = None
+        last_output = None
+
+        for line in lines:
+
+            tag = None
+            line = line.strip()
+
+            searches = re.search(r'\*\s{1,}(\@.[^\s]*)\s+(.*)', line, re.M | re.I)
+
+            if searches != None:
+                
+                tag = searches.group(1).replace("@", "")
+                value = searches.group(2).strip()
+
+                if tag in ["category", "api", "typedef"]:
+
+                    last_element = last_input = last_output = None
+
+                    if tag == "category":
+                        
+                        if not value in categories:
+                            categories[ value ] = { 'category': value, 'synopsis': [], 'discussion': [] }
+                        last_category = value
+                        last_api_typedef_category = tag
+
+                    elif tag == "api":
+
+                        methods[ value ] = { 'category': last_category, 'api': value, 'input': {}, 'output': {}, 'desc': [] }
+                        last_api = value
+                        last_api_typedef_category = tag
+
+                    elif tag == "typedef":
+
+                        types[ value ] = { 'category': last_category, 'typedef': value, 'element': {}, 'desc': [] }
+                        last_typedef = value
+                        last_api_typedef_category = tag
+                    
+                elif tag in ["element", "input", "output"]:
+
+                    if tag == "element":
+                        # always belons to typedef:
+                        last_input = last_output = None
+                        types[ last_typedef ][ tag ][ value ] = { 'desc': [] }
+                        last_element = value
+                    else:
+                        # always belons to api:
+                        methods[ last_api ][ tag ][ value ] = { 'desc': [] }
+                        if tag == "input":
+                            last_element = last_output = None
+                            last_input = value
+                        else:
+                            last_element = last_input = None
+                            last_output = value
+                    
+                elif tag in ["namespace", "family",
+                             "status", "errno", "readonly", "type", "range",
+                             "license", "test", "scope", "streaming", "doc", "domain", "desc", "discussion", "synopsis"]:
+
+                    if last_element != None:
+
+                        if not tag in types[ last_typedef ][ "element" ][ last_element ]:
+                            types[ last_typedef ][ "element" ][ last_element ][ tag ] = []
+                        types[ last_typedef ][ "element" ][ last_element ][ tag ].append( value )
+
+                    elif last_input != None:
+                        
+                        if not tag in methods[ last_api ][ "input" ][ last_input ]:
+                            methods[ last_api ][ "input" ][ last_input ][ tag ] = []
+                        methods[ last_api ][ "input" ][ last_input ][ tag ].append( value )
+
+                    elif last_output != None:
+                        
+                        if not tag in methods[ last_api ][ "output" ][ last_output ]:
+                            methods[ last_api ][ "output" ][ last_output ][ tag ] = []
+                        methods[ last_api ][ "output" ][ last_output ][ tag ].append( value )
+
+                    else:
+
+                        if last_api_typedef_category == "api":
+                            if not tag in methods[ last_api ]:
+                                methods[ last_api ][ tag ] = []
+                            methods[ last_api ][ tag ].append( value )
+                        elif last_api_typedef_category == "typedef":
+                            if not tag in types[ last_typedef ]:
+                                types[ last_typedef ][ tag ] = []
+                            types[ last_typedef ][ tag ].append( value )
+                        elif last_api_typedef_category == "category":
+                            if not tag in categories[ last_category ]:
+                                categories[ last_category ][ tag ] = []
+                            categories[ last_category ][ tag ].append( value )
+
+                else:
+                    print "Unsupported tag {}".format(tag)
+
+            else:
+
+                if line.strip().startswith("/***") or line.strip().endswith("***/"):
+                    pass
+                else:
+                    
+                    if last_api_typedef_category == "category":
+                        categories[ last_category ][ 'discussion' ].append( line[1:].strip() )
+                    
+                    elif last_api_typedef_category == "typedef":
+                        if last_element != None:
+                            types[ last_typedef ][ 'element' ][ last_element ][ 'desc' ].append( line[1:].strip() )
+                        else:
+                            types[ last_typedef ][ 'desc' ].append( line[1:].strip() )
+
+                    elif last_api_typedef_category == "api":
+                        if last_input != None:
+                            methods[ last_api ][ 'input' ][ last_input ][ 'desc' ].append( line[1:].strip() )
+                        elif last_output != None:
+                            methods[ last_api ][ 'output' ][ last_output ][ 'desc' ].append( line[1:].strip() )
+                        else:
+                            methods[ last_api ][ 'desc' ].append( line[1:].strip() )
+
+                    else:
+                        print "Unsupported line: {}".format( line.strip() )
+
+    if options.language == "python":
+        generator = GenerateNetAppPython( categories, types, methods )
+        generator.generate()
